@@ -1,0 +1,9 @@
+/var/log/my_assistant/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 my_assistant my_assistant
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=my_assistant home monitoring backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=my_assistant
+Group=my_assistant
+WorkingDirectory=/var/lib/my_assistant
+EnvironmentFile=/etc/my_assistant/my_assistant.env
+ExecStart=/usr/local/bin/my_assistant
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/my_assistant /var/log/my_assistant
+
+[Install]
+WantedBy=multi-user.target
