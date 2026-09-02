@@ -109,23 +109,58 @@ Control sensor boards and camera tilt/zoom through device-specific adapters.
 
 - [ ] Implement the initial React + TypeScript + Vite frontend
   - [x] Create the frontend project structure
-  - [ ] Install Material UI dependencies
+  - [x] Install Material UI dependencies
   - [x] Add development and production build commands
-  - [ ] Add a shared API client for REST requests and error responses
-  - [ ] Add login, logout, session-check, and protected-route handling
-  - [ ] Create the dashboard layout with navigation and system status
-  - [ ] Display the health-check status and user/session state
-  - [ ] Add a sensor list with availability, latest reading, and timestamp
-  - [ ] Add a sensor detail view with historical readings and a basic graph
-  - [ ] Add a camera list with online/offline status and a stream placeholder
-  - [ ] Add device command controls with confirmation and result/error states
-  - [ ] Add loading, empty, unauthorized, and backend-unavailable states
-  - [ ] Connect live readings and command status through WebSocket events
-  - [ ] Add responsive styling for desktop and tablet screens
+  - [x] Add a shared API client for REST requests and error responses
+  - [x] Add login, logout, session-check, and protected-route handling
+  - [x] Create the dashboard layout with navigation and system status
+  - [x] Display the health-check status and user/session state
+  - [x] Add a sensor list with availability, latest reading, and timestamp
+  - [x] Add a sensor detail view with historical readings and a basic graph
+  - [x] Add a camera list with online/offline status and a stream placeholder
+  - [x] Add device command controls with confirmation and result/error states
+  - [x] Add loading, empty, unauthorized, and backend-unavailable states
+  - [x] Connect live readings and command status through WebSocket events
+  - [x] Add responsive styling for desktop and tablet screens
   - [ ] Add frontend unit/component tests for authentication and dashboard states
-  - [ ] Serve the built frontend from the Go backend
-  - [ ] Include frontend production assets in the ARM64 release package
+  - [x] Serve the built frontend from the Go backend
+  - [x] Include frontend production assets in the ARM64 release package
   - [ ] Deploy the UI to the Raspberry Pi and verify access over the LAN
+
+## Backend API implementation
+
+- [x] Implement `GET /api/v1/status`
+- [x] Implement `GET /api/v1/devices`
+- [x] Implement `GET /api/v1/devices/{id}/readings`
+- [x] Implement `GET /api/v1/cameras`
+- [x] Implement the WebSocket endpoint `/api/v1/ws`
+- [ ] Implement device and camera command endpoints
+- [x] Implement MQTT discovery and live sensor updates
+  - [x] Implement discovery, availability, and telemetry message ingestion
+  - [x] Connect the ingestion service to Mosquitto with reconnect handling
+- [ ] Run Raspberry Pi integration testing
+
+### ESP32-S3-EYE camera integration
+
+- [x] Register a configured MJPEG camera stream
+- [x] Add authenticated camera stream descriptor endpoint
+- [x] Render MJPEG streams in the dashboard
+- [x] Verify camera stream access through the Raspberry Pi LAN address
+- [x] Add camera availability monitoring and reconnect handling
+
+## Next steps after first successful deployment
+
+- [ ] Run a Raspberry Pi reboot test and verify the service starts automatically
+- [ ] Verify sensor MQTT ingestion and camera streaming after reboot
+- [ ] Add camera availability checks and show offline state in the dashboard
+- [x] Automatically start the camera stream when the camera returns online
+- [x] Automatically reconnect the browser stream after a transient stream error
+- [ ] Fix ESP32 time synchronization so telemetry timestamps are not `1970-01-01`
+- [ ] Implement device command adapters and connect dashboard controls
+- [ ] Implement camera command support if the camera firmware exposes controls
+- [ ] Add frontend unit/component tests for login, sensor, and camera states
+- [ ] Add backup and restore instructions for `/var/lib/my_assistant`
+- [ ] Document production MQTT/TLS and camera network configuration
 
 ## Open design questions
 

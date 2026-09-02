@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -22,8 +23,8 @@ import (
 )
 
 const (
-	defaultCookieName = "my_assistant_session"
-	defaultSessionTTL = 24 * time.Hour
+	defaultCookieName  = "my_assistant_session"
+	defaultSessionTTL  = 24 * time.Hour
 	maxPasswordBytes   = 72
 	maxLoginFailures   = 5
 	loginFailureWindow = 15 * time.Minute
@@ -68,6 +69,34 @@ func New(database *sql.DB) *Auth {
 		},
 		limiter: newLoginLimiter(),
 	}
+}
+
+// CreateUser creates an administrator account for the initial dashboard setup.
+// Passwords are never stored in plaintext.
+func CreateUser(ctx context.Context, database *sql.DB, username, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" || len([]byte(password)) == 0 || len([]byte(password)) > maxPasswordBytes {
+		return errors.New("username and password are required; password must be 1-72 bytes")
+	}
+	if database == nil {
+		return errors.New("auth database is nil")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = database.ExecContext(ctx,
+		"INSERT INTO users(username, password_hash, role, created_at, updated_at) VALUES (?, ?, 'admin', ?, ?)",
+		username, string(hash), now, now,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return fmt.Errorf("username %q already exists", username)
+		}
+		return fmt.Errorf("create user: %w", err)
+	}
+	return nil
 }
 
 // Handler returns the authentication routes.

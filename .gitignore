@@ -29,6 +29,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 dist/
+!web/
+!web/dist/
+!web/dist/index.html
 build/
 .vite/
 .cache/

@@ -25,18 +25,25 @@ Build the backend release from WSL Ubuntu 22.04:
 
 The command cross-compiles a `linux/arm64` binary and creates
 `dist/my_assistant-linux-arm64.tar.gz`. On the Raspberry Pi, copy the extracted
-release directory and a deployment-specific environment file, then run as
+release directory, create a deployment-specific environment file, and run as
 root:
 
 ```sh
 sudo ./scripts/install.sh /path/to/my_assistant-linux-arm64
 ```
 
+The release archive contains `install.sh`, so the equivalent command from the
+extracted directory is:
+
+```sh
+sudo ./install.sh .
+```
+
 The installer registers and starts the systemd service. Do not use
 `.env.example` as production configuration; copy it to the protected path and
-replace placeholder values first. Frontend assets and Raspberry Pi reboot
-recovery testing remain pending until the frontend and production test device
-are available.
+replace placeholder values first. The release build compiles and embeds the
+frontend assets in the backend binary. Device discovery and Raspberry Pi reboot
+recovery testing remain deployment tasks.
 
 ---
 ## TODOs

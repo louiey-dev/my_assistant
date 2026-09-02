@@ -3,6 +3,11 @@ set -eu
 
 package=${1:?usage: install.sh RELEASE_DIRECTORY}
 test -x "$package/my_assistant"
+test -f "$package/my_assistant.env"
+
+if ! id my_assistant >/dev/null 2>&1; then
+	useradd --system --home-dir /var/lib/my_assistant --shell /usr/sbin/nologin my_assistant
+fi
 
 install -Dm755 "$package/my_assistant" /usr/local/bin/my_assistant
 install -Dm644 "$package/my_assistant.service" /etc/systemd/system/my_assistant.service
