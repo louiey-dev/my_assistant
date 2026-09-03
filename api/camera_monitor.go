@@ -39,9 +39,9 @@ func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, 
 				failures[id] = 0
 			} else {
 				failures[id]++
-				// the browser is reconnecting. Require four failures before
-				// declaring the camera offline.
-				if failures[id] < 4 {
+				// Allow one transient probe failure, then report the camera
+				// offline promptly so the browser can discard its old stream.
+				if failures[id] < 2 {
 					continue
 				}
 			}
@@ -59,7 +59,7 @@ func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, 
 	}
 
 	check()
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

@@ -28,22 +28,108 @@ function SensorDetails({ device, onClose }: { device: Device; onClose: () => voi
   return <Paper elevation={6} sx={{ position: 'fixed', inset: 0, m: 'auto', width: 'min(560px, calc(100% - 32px))', height: 'fit-content', maxHeight: 'calc(100% - 32px)', overflow: 'auto', p: 3, zIndex: 10 }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6">{device.name || device.device_id}</Typography><Typography color="text.secondary">Reading history</Typography></Box><Button onClick={onClose}>Close</Button></Stack>{error ? <Alert severity="info" sx={{ mt: 2 }}>{error}</Alert> : readings.length === 0 ? <Alert severity="info" sx={{ mt: 2 }}>No historical readings are available yet.</Alert> : <><Box component="svg" viewBox="0 0 300 120" sx={{ width: '100%', mt: 3, bgcolor: 'action.hover', borderRadius: 1 }}><polyline points={polyline} fill="none" stroke="currentColor" strokeWidth="3" /></Box><Typography variant="caption" color="text.secondary">{readings.length} readings · {readings[0].unit || ''}</Typography></>}</Paper>
 }
 
+function MjpegStream({ url, alt, onFailure }: { url: string; alt: string; onFailure: () => void }) {
+  const [frame, setFrame] = useState<string | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    let active = true
+    let failed = false
+    let frameURL: string | null = null
+    let lastPaint = 0
+    let noFrameTimer: number | null = null
+    const fail = () => {
+      if (!active || failed) return
+      failed = true
+      controller.abort()
+      onFailure()
+    }
+    const armNoFrameTimer = () => {
+      if (noFrameTimer !== null) window.clearTimeout(noFrameTimer)
+      noFrameTimer = window.setTimeout(fail, 20000)
+    }
+    const marker = (bytes: Uint8Array, first: number, second: number, from: number) => {
+      for (let index = from; index < bytes.length - 1; index += 1) if (bytes[index] === first && bytes[index + 1] === second) return index
+      return -1
+    }
+    const displayFrame = (jpeg: Uint8Array) => {
+      armNoFrameTimer()
+      if (performance.now() - lastPaint < 100) return
+      lastPaint = performance.now()
+      const copy = new Uint8Array(jpeg.length)
+      copy.set(jpeg)
+      const nextURL = URL.createObjectURL(new Blob([copy.buffer], { type: 'image/jpeg' }))
+      if (!active) return URL.revokeObjectURL(nextURL)
+      const previousURL = frameURL
+      frameURL = nextURL
+      setFrame(nextURL)
+      if (previousURL) URL.revokeObjectURL(previousURL)
+    }
+    const read = async () => {
+      try {
+        const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
+        if (!response.ok || !response.body) throw new Error('Camera stream unavailable')
+        armNoFrameTimer()
+        const reader = response.body.getReader()
+        let buffered = new Uint8Array(0)
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const next = new Uint8Array(buffered.length + value.length)
+          next.set(buffered)
+          next.set(value, buffered.length)
+          buffered = next
+          for (;;) {
+            const start = marker(buffered, 0xff, 0xd8, 0)
+            if (start < 0) {
+              buffered = buffered.slice(Math.max(buffered.length - 1, 0))
+              break
+            }
+            const end = marker(buffered, 0xff, 0xd9, start + 2)
+            if (end < 0) {
+              buffered = buffered.slice(start)
+              break
+            }
+            displayFrame(buffered.slice(start, end + 2))
+            buffered = buffered.slice(end + 2)
+          }
+        }
+        fail()
+      } catch (reason) {
+        if (active && !(reason instanceof DOMException && reason.name === 'AbortError')) fail()
+      }
+    }
+    void read()
+    return () => {
+      active = false
+      controller.abort()
+      if (noFrameTimer !== null) window.clearTimeout(noFrameTimer)
+      if (frameURL) URL.revokeObjectURL(frameURL)
+    }
+  }, [url, onFailure])
+  return frame ? <Box component="img" src={frame} alt={alt} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <Typography>Connecting to camera…</Typography>
+}
+
 function CameraCard({ camera, onCommand }: { camera: Camera; onCommand: (camera: Camera) => void }) {
   const [stream, setStream] = useState<{ url: string; type?: string } | null>(null); const [streamError, setStreamError] = useState<string | null>(null)
   const retryTimer = useRef<number | null>(null)
   const retryDelay = useRef(2000)
   const attempt = useRef(0)
+  const loadSequence = useRef(0)
+  const previousAvailability = useRef<boolean | undefined>(undefined)
   const loadStream = useCallback(async () => {
+    const sequence = ++loadSequence.current
     setStreamError(null)
     try {
       const descriptor = await api.cameraStream(camera.camera_id)
       if (!descriptor.url) throw new Error('The camera did not provide a stream URL.')
+      if (sequence !== loadSequence.current) return
       attempt.current += 1
       // Force a fresh browser/proxy connection after a failed MJPEG request.
       const separator = descriptor.url.includes('?') ? '&' : '?'
       setStream({ url: `${descriptor.url}${separator}attempt=${attempt.current}`, type: descriptor.type })
       retryDelay.current = 2000
     } catch (reason) {
+      if (sequence !== loadSequence.current) return
       setStream(null)
       setStreamError(messageFor(reason))
       scheduleRetry()
@@ -55,9 +141,58 @@ function CameraCard({ camera, onCommand }: { camera: Camera; onCommand: (camera:
     retryDelay.current = Math.min(delay * 2, 30000)
     retryTimer.current = window.setTimeout(() => { retryTimer.current = null; void loadStream() }, delay)
   }, [loadStream])
-  useEffect(() => { void loadStream(); return () => { if (retryTimer.current !== null) window.clearTimeout(retryTimer.current) } }, [loadStream])
-  const retryStream = () => { setStream(null); setStreamError('Stream disconnected; reconnecting…'); scheduleRetry() }
-  return <Card sx={{ height: '100%' }}><Box sx={{ aspectRatio: '16 / 9', bgcolor: 'grey.900', display: 'grid', placeItems: 'center', color: 'grey.300', p: 2 }}>{stream ? stream.type === 'mjpeg' ? <Box component="img" src={stream.url} onError={retryStream} alt={`${camera.name || camera.camera_id} stream`} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <Box component="video" src={stream.url} controls sx={{ width: '100%', height: '100%' }} /> : <Stack alignItems="center" spacing={1}><Typography>{streamError || 'Stream placeholder'}</Typography><Button variant="contained" size="small" onClick={loadStream}>Load stream</Button></Stack>}</Box><CardContent><Stack direction="row" justifyContent="space-between" gap={1}><Box><Typography variant="h6">{camera.name || camera.camera_id}</Typography><Typography variant="caption" color="text.secondary">{camera.camera_id}</Typography></Box><StatusChip online={camera.available} /></Stack>{streamError && stream && <Alert severity="info" sx={{ mt: 1 }}>{streamError}</Alert>}<Button sx={{ mt: 1 }} size="small" variant="outlined" disabled={!camera.available} onClick={() => onCommand(camera)}>PTZ command</Button></CardContent></Card>
+  const restartStream = useCallback(() => {
+    // Unmount the old <img> before creating the replacement. This is needed
+    // when the browser has not noticed that the previous MJPEG socket died.
+    ++loadSequence.current
+    if (retryTimer.current !== null) {
+      window.clearTimeout(retryTimer.current)
+      retryTimer.current = null
+    }
+    setStream(null)
+    setStreamError(null)
+    void loadStream()
+  }, [loadStream])
+  useEffect(() => {
+    const wentOffline = camera.available === false && previousAvailability.current !== false
+    const recovered = camera.available === true && previousAvailability.current === false
+    const firstLoad = previousAvailability.current === undefined
+    previousAvailability.current = camera.available
+    if (wentOffline) {
+      // Do not leave a half-open MJPEG element visible while the camera is
+      // rebooting. It can prevent the browser from opening the recovered
+      // stream and makes the card look online/usable when it is not.
+      ++loadSequence.current
+      setStream(null)
+      setStreamError('Camera offline; waiting for it to reconnect…')
+      if (retryTimer.current !== null) {
+        window.clearTimeout(retryTimer.current)
+        retryTimer.current = null
+      }
+    } else if (firstLoad || recovered) {
+      // A camera can keep the old TCP/MJPEG connection half-open while Wi-Fi
+      // is recovering. Replacing the image forces a new request immediately
+      // when the monitor reports the camera online again.
+      if (retryTimer.current !== null) {
+        window.clearTimeout(retryTimer.current)
+        retryTimer.current = null
+      }
+      if (camera.available === true) void restartStream()
+    }
+    return () => {
+      if (retryTimer.current !== null) window.clearTimeout(retryTimer.current)
+    }
+  }, [camera.available, restartStream])
+  const retryStream = useCallback(() => {
+    // The browser is the first component that can observe a broken MJPEG
+    // connection. Show the offline state immediately instead of waiting for
+    // the backend's slower availability probe.
+    ++loadSequence.current
+    setStream(null)
+    setStreamError('Camera offline; waiting for it to reconnect…')
+    scheduleRetry()
+  }, [scheduleRetry])
+  return <Card sx={{ height: '100%' }}><Box sx={{ aspectRatio: '16 / 9', bgcolor: 'grey.900', display: 'grid', placeItems: 'center', color: 'grey.300', p: 2 }}>{stream ? stream.type === 'mjpeg' ? <MjpegStream key={stream.url} url={stream.url} onFailure={retryStream} alt={`${camera.name || camera.camera_id} stream`} /> : <Box key={stream.url} component="video" src={stream.url} onError={retryStream} onAbort={retryStream} controls sx={{ width: '100%', height: '100%' }} /> : <Stack alignItems="center" spacing={1}><Typography>{streamError || 'Stream placeholder'}</Typography><Button variant="contained" size="small" onClick={restartStream}>Load stream</Button></Stack>}</Box><CardContent><Stack direction="row" justifyContent="space-between" gap={1}><Box><Typography variant="h6">{camera.name || camera.camera_id}</Typography><Typography variant="caption" color="text.secondary">{camera.camera_id}</Typography></Box><StatusChip online={camera.available} /></Stack>{streamError && stream && <Alert severity="info" sx={{ mt: 1 }}>{streamError}</Alert>}<Button sx={{ mt: 1 }} size="small" variant="outlined" disabled={!camera.available} onClick={() => onCommand(camera)}>PTZ command</Button></CardContent></Card>
 }
 
 function CommandDialog({ target, onClose }: { target: Device | Camera; onClose: () => void }) {

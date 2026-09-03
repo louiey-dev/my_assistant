@@ -51,6 +51,9 @@ recovery testing remain deployment tasks.
 ---
 ## History
 
+- 2026.09.03
+    - sensor reading/camera streaming is stable now
+
 ---
 ## Info
 
