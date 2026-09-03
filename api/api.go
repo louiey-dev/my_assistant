@@ -6,15 +6,27 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 )
 
-type Handler struct{ DB *sql.DB }
+type Handler struct {
+	DB     *sql.DB
+	Logger *slog.Logger
+}
 
-func New(database *sql.DB) *Handler { return &Handler{DB: database} }
+func New(database *sql.DB, loggers ...*slog.Logger) *Handler {
+	logger := slog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
+	return &Handler{DB: database, Logger: logger}
+}
 
 func (h *Handler) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -196,6 +208,25 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	streamStarted := time.Now()
+	lastUpstreamData := streamStarted
+	var bytesForwarded int64
+	logStreamEnd := func(event string, streamErr error) {
+		if h.Logger == nil {
+			return
+		}
+		attributes := []any{
+			"event", event,
+			"camera_id", r.PathValue("camera_id"),
+			"duration", time.Since(streamStarted).Round(time.Millisecond),
+			"bytes_forwarded", bytesForwarded,
+			"upstream_idle", time.Since(lastUpstreamData).Round(time.Millisecond),
+		}
+		if streamErr != nil && !errors.Is(streamErr, io.EOF) {
+			attributes = append(attributes, "error_type", fmt.Sprintf("%T", streamErr))
+		}
+		h.Logger.Info("camera stream ended", attributes...)
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		writeError(w, http.StatusBadGateway, "camera_unavailable", "The camera stream returned an error.")
 		return
@@ -218,7 +249,10 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		read, readErr := response.Body.Read(buffer)
 		if read > 0 {
+			lastUpstreamData = time.Now()
+			bytesForwarded += int64(read)
 			if _, writeErr := w.Write(buffer[:read]); writeErr != nil {
+				logStreamEnd("camera_stream_downstream_write_failed", writeErr)
 				return
 			}
 			if canFlush {
@@ -226,6 +260,13 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if readErr != nil {
+			if r.Context().Err() != nil {
+				logStreamEnd("camera_stream_downstream_canceled", r.Context().Err())
+			} else if errors.Is(readErr, io.EOF) {
+				logStreamEnd("camera_stream_upstream_eof", nil)
+			} else {
+				logStreamEnd("camera_stream_upstream_read_failed", readErr)
+			}
 			return
 		}
 	}

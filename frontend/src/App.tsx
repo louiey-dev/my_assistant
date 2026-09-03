@@ -45,10 +45,16 @@ function MjpegStream({ url, alt, onFailure }: { url: string; alt: string; onFail
     }
     const armNoFrameTimer = () => {
       if (noFrameTimer !== null) window.clearTimeout(noFrameTimer)
-      noFrameTimer = window.setTimeout(fail, 20000)
+      // A quiet period can be caused by Wi-Fi jitter or a slow camera frame.
+      // Only replace the connection after a sustained stall; EOF and network
+      // errors still trigger an immediate reconnect.
+      noFrameTimer = window.setTimeout(fail, 60000)
     }
-    const marker = (bytes: Uint8Array, first: number, second: number, from: number) => {
-      for (let index = from; index < bytes.length - 1; index += 1) if (bytes[index] === first && bytes[index + 1] === second) return index
+    const indexOf = (bytes: Uint8Array, pattern: Uint8Array, from: number) => {
+      outer: for (let index = from; index <= bytes.length - pattern.length; index += 1) {
+        for (let offset = 0; offset < pattern.length; offset += 1) if (bytes[index + offset] !== pattern[offset]) continue outer
+        return index
+      }
       return -1
     }
     const displayFrame = (jpeg: Uint8Array) => {
@@ -70,6 +76,10 @@ function MjpegStream({ url, alt, onFailure }: { url: string; alt: string; onFail
         if (!response.ok || !response.body) throw new Error('Camera stream unavailable')
         armNoFrameTimer()
         const reader = response.body.getReader()
+        const boundaryName = response.headers.get('content-type')?.match(/boundary\s*=\s*"?([^";\s]+)/i)?.[1]
+        const boundary = boundaryName ? new TextEncoder().encode(`--${boundaryName}`) : null
+        const headerEnd = new Uint8Array([13, 10, 13, 10])
+        const decoder = new TextDecoder()
         let buffered = new Uint8Array(0)
         for (;;) {
           const { done, value } = await reader.read()
@@ -79,18 +89,27 @@ function MjpegStream({ url, alt, onFailure }: { url: string; alt: string; onFail
           next.set(value, buffered.length)
           buffered = next
           for (;;) {
-            const start = marker(buffered, 0xff, 0xd8, 0)
+            if (!boundary) throw new Error('Camera stream is missing a multipart boundary')
+            const start = indexOf(buffered, boundary, 0)
             if (start < 0) {
-              buffered = buffered.slice(Math.max(buffered.length - 1, 0))
+              buffered = buffered.slice(Math.max(buffered.length - boundary.length + 1, 0))
               break
             }
-            const end = marker(buffered, 0xff, 0xd9, start + 2)
-            if (end < 0) {
+            const nextBoundary = indexOf(buffered, boundary, start + boundary.length)
+            if (nextBoundary < 0) {
               buffered = buffered.slice(start)
               break
             }
-            displayFrame(buffered.slice(start, end + 2))
-            buffered = buffered.slice(end + 2)
+            const headersEnd = indexOf(buffered, headerEnd, start + boundary.length)
+            if (headersEnd >= 0 && headersEnd < nextBoundary) {
+              const headers = decoder.decode(buffered.slice(start + boundary.length, headersEnd))
+              let frameEnd = nextBoundary
+              if (buffered[frameEnd - 2] === 13 && buffered[frameEnd - 1] === 10) frameEnd -= 2
+              if (/content-type\s*:\s*image\/jpeg/i.test(headers) && frameEnd > headersEnd + headerEnd.length) displayFrame(buffered.slice(headersEnd + headerEnd.length, frameEnd))
+            }
+            // Discard the completed part. If a camera sends a malformed part,
+            // the next multipart boundary still restores synchronization.
+            buffered = buffered.slice(nextBoundary)
           }
         }
         fail()

@@ -50,7 +50,7 @@ func main() {
 	}
 
 	service := auth.New(database)
-	dashboardAPI := api.New(database)
+	dashboardAPI := api.New(database, logger)
 	if cameraURL := strings.TrimSpace(os.Getenv("MY_ASSISTANT_CAMERA_STREAM_URL")); cameraURL != "" {
 		cameraID := env("MY_ASSISTANT_CAMERA_ID", "esp32_camera01")
 		cameraName := env("MY_ASSISTANT_CAMERA_NAME", "ESP32-S3-EYE")

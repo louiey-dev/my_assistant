@@ -59,7 +59,10 @@ func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, 
 	}
 
 	check()
-	ticker := time.NewTicker(5 * time.Second)
+	// Do not repeatedly open raw TCP connections to a small ESP HTTP server.
+	// Frequent probes can exhaust its limited socket pool and evict the active
+	// MJPEG client. Frame-aware browser recovery handles stream failures.
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

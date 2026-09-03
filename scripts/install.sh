@@ -15,4 +15,5 @@ install -Dm644 "$package/my_assistant.logrotate" /etc/logrotate.d/my_assistant
 install -d -o my_assistant -g my_assistant /var/lib/my_assistant /var/log/my_assistant /etc/my_assistant
 install -Dm640 -o my_assistant -g my_assistant "$package/my_assistant.env" /etc/my_assistant/my_assistant.env
 systemctl daemon-reload
-systemctl enable --now my_assistant.service
+systemctl enable my_assistant.service
+systemctl restart my_assistant.service
