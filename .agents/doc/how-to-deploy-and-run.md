@@ -256,3 +256,25 @@ sudo install -Dm755 \
 sudo systemctl restart my_assistant
 sudo journalctl -u my_assistant -f
 ```
+
+```bash
+Deploy:
+
+  scp dist/my_assistant-linux-arm64-camera-proxy.tar.gz \
+    pi@192.168.1.10:~/Work/
+
+  On the Pi:
+
+  cd ~/Work
+  mkdir -p my_assistant-linux-arm64-camera-proxy
+
+  tar -xzf my_assistant-linux-arm64-camera-proxy.tar.gz \
+    -C my_assistant-linux-arm64-camera-proxy --strip-components=1
+
+  cd my_assistant-linux-arm64-camera-proxy
+  sudo cp /etc/my_assistant/my_assistant.env ./my_assistant.env
+  sudo ./install.sh .
+  sudo systemctl restart my_assistant
+
+  Then press Ctrl+F5 in the browser.
+  ```

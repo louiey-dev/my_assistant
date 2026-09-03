@@ -155,6 +155,7 @@ Control sensor boards and camera tilt/zoom through device-specific adapters.
 - [ ] Add camera availability checks and show offline state in the dashboard
 - [x] Automatically start the camera stream when the camera returns online
 - [x] Automatically reconnect the browser stream after a transient stream error
+- [x] Proxy MJPEG streams through the Raspberry Pi for stable same-origin playback
 - [ ] Fix ESP32 time synchronization so telemetry timestamps are not `1970-01-01`
 - [ ] Implement device command adapters and connect dashboard controls
 - [ ] Implement camera command support if the camera firmware exposes controls

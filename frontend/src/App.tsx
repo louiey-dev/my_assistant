@@ -31,10 +31,33 @@ function SensorDetails({ device, onClose }: { device: Device; onClose: () => voi
 function CameraCard({ camera, onCommand }: { camera: Camera; onCommand: (camera: Camera) => void }) {
   const [stream, setStream] = useState<{ url: string; type?: string } | null>(null); const [streamError, setStreamError] = useState<string | null>(null)
   const retryTimer = useRef<number | null>(null)
-  const loadStream = useCallback(async () => { setStreamError(null); try { const descriptor = await api.cameraStream(camera.camera_id); setStream(descriptor.url ? { url: descriptor.url, type: descriptor.type } : null) } catch (reason) { setStreamError(messageFor(reason)) } }, [camera.camera_id])
-  useEffect(() => { if (camera.available) { void loadStream() } else { setStream(null); setStreamError(null); if (retryTimer.current !== null) window.clearTimeout(retryTimer.current) } return () => { if (retryTimer.current !== null) window.clearTimeout(retryTimer.current) } }, [camera.available, loadStream])
-  const retryStream = () => { setStream(null); setStreamError('Stream disconnected; reconnecting…'); if (retryTimer.current === null && camera.available) retryTimer.current = window.setTimeout(() => { retryTimer.current = null; void loadStream() }, 5000) }
-  return <Card sx={{ height: '100%' }}><Box sx={{ aspectRatio: '16 / 9', bgcolor: 'grey.900', display: 'grid', placeItems: 'center', color: 'grey.300', p: 2 }}>{stream ? stream.type === 'mjpeg' ? <Box component="img" src={stream.url} onError={retryStream} alt={`${camera.name || camera.camera_id} stream`} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <Box component="video" src={stream.url} controls sx={{ width: '100%', height: '100%' }} /> : <Stack alignItems="center" spacing={1}><Typography>{streamError || 'Stream placeholder'}</Typography><Button variant="contained" size="small" onClick={loadStream} disabled={!camera.available}>Load stream</Button></Stack>}</Box><CardContent><Stack direction="row" justifyContent="space-between" gap={1}><Box><Typography variant="h6">{camera.name || camera.camera_id}</Typography><Typography variant="caption" color="text.secondary">{camera.camera_id}</Typography></Box><StatusChip online={camera.available} /></Stack>{streamError && stream && <Alert severity="info" sx={{ mt: 1 }}>{streamError}</Alert>}<Button sx={{ mt: 1 }} size="small" variant="outlined" disabled={!camera.available} onClick={() => onCommand(camera)}>PTZ command</Button></CardContent></Card>
+  const retryDelay = useRef(2000)
+  const attempt = useRef(0)
+  const loadStream = useCallback(async () => {
+    setStreamError(null)
+    try {
+      const descriptor = await api.cameraStream(camera.camera_id)
+      if (!descriptor.url) throw new Error('The camera did not provide a stream URL.')
+      attempt.current += 1
+      // Force a fresh browser/proxy connection after a failed MJPEG request.
+      const separator = descriptor.url.includes('?') ? '&' : '?'
+      setStream({ url: `${descriptor.url}${separator}attempt=${attempt.current}`, type: descriptor.type })
+      retryDelay.current = 2000
+    } catch (reason) {
+      setStream(null)
+      setStreamError(messageFor(reason))
+      scheduleRetry()
+    }
+  }, [camera.camera_id])
+  const scheduleRetry = useCallback(() => {
+    if (retryTimer.current !== null) return
+    const delay = retryDelay.current
+    retryDelay.current = Math.min(delay * 2, 30000)
+    retryTimer.current = window.setTimeout(() => { retryTimer.current = null; void loadStream() }, delay)
+  }, [loadStream])
+  useEffect(() => { void loadStream(); return () => { if (retryTimer.current !== null) window.clearTimeout(retryTimer.current) } }, [loadStream])
+  const retryStream = () => { setStream(null); setStreamError('Stream disconnected; reconnecting…'); scheduleRetry() }
+  return <Card sx={{ height: '100%' }}><Box sx={{ aspectRatio: '16 / 9', bgcolor: 'grey.900', display: 'grid', placeItems: 'center', color: 'grey.300', p: 2 }}>{stream ? stream.type === 'mjpeg' ? <Box component="img" src={stream.url} onError={retryStream} alt={`${camera.name || camera.camera_id} stream`} sx={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <Box component="video" src={stream.url} controls sx={{ width: '100%', height: '100%' }} /> : <Stack alignItems="center" spacing={1}><Typography>{streamError || 'Stream placeholder'}</Typography><Button variant="contained" size="small" onClick={loadStream}>Load stream</Button></Stack>}</Box><CardContent><Stack direction="row" justifyContent="space-between" gap={1}><Box><Typography variant="h6">{camera.name || camera.camera_id}</Typography><Typography variant="caption" color="text.secondary">{camera.camera_id}</Typography></Box><StatusChip online={camera.available} /></Stack>{streamError && stream && <Alert severity="info" sx={{ mt: 1 }}>{streamError}</Alert>}<Button sx={{ mt: 1 }} size="small" variant="outlined" disabled={!camera.available} onClick={() => onCommand(camera)}>PTZ command</Button></CardContent></Card>
 }
 
 function CommandDialog({ target, onClose }: { target: Device | Camera; onClose: () => void }) {

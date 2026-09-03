@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ func (h *Handler) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/devices/{device_id}/readings", h.readings)
 	mux.HandleFunc("GET /api/v1/cameras", h.cameras)
 	mux.HandleFunc("GET /api/v1/cameras/{camera_id}/stream", h.cameraStream)
+	mux.HandleFunc("GET /api/v1/cameras/{camera_id}/stream/live", h.cameraLiveStream)
 	mux.HandleFunc("POST /api/v1/devices/{device_id}/commands", h.deviceCommand)
 	mux.HandleFunc("POST /api/v1/cameras/{camera_id}/commands", h.cameraCommand)
 	return mux
@@ -157,7 +159,76 @@ func (h *Handler) cameraStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "dependency_unavailable", "The camera stream is not configured.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"camera_id": r.PathValue("camera_id"), "name": name, "url": streamURL, "type": "mjpeg"})
+	writeJSON(w, http.StatusOK, map[string]string{"camera_id": r.PathValue("camera_id"), "name": name, "url": "/api/v1/cameras/" + r.PathValue("camera_id") + "/stream/live", "type": "mjpeg"})
+}
+
+func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
+	var streamURL string
+	err := h.DB.QueryRowContext(r.Context(), "SELECT stream_config_ref FROM cameras WHERE camera_id = ?", r.PathValue("camera_id")).Scan(&streamURL)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "not_found", "The requested camera does not exist.")
+		return
+	}
+	if err != nil || strings.TrimSpace(streamURL) == "" {
+		writeError(w, http.StatusServiceUnavailable, "dependency_unavailable", "The camera stream is not configured.")
+		return
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, streamURL, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "The camera stream URL is invalid.")
+		return
+	}
+	// Do not use the default client timeout here: an MJPEG stream is expected
+	// to stay open indefinitely. The request context still closes the upstream
+	// connection as soon as the browser disconnects.
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}}
+	response, err := client.Do(request)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "camera_unavailable", "The camera stream could not be reached.")
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, http.StatusBadGateway, "camera_unavailable", "The camera stream returned an error.")
+		return
+	}
+	contentType := response.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "multipart/x-mixed-replace"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no") // useful when deployed behind nginx
+	w.WriteHeader(response.StatusCode)
+
+	// io.Copy can leave small MJPEG frames buffered by the HTTP server or a
+	// reverse proxy. Flush after every upstream read so the browser receives
+	// each frame promptly. A write error is normal when the browser reconnects.
+	flusher, canFlush := w.(http.Flusher)
+	buffer := make([]byte, 32*1024)
+	for {
+		read, readErr := response.Body.Read(buffer)
+		if read > 0 {
+			if _, writeErr := w.Write(buffer[:read]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }
 
 // RegisterCamera stores a non-secret stream descriptor for a camera. Stream
