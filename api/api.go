@@ -12,12 +12,23 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
+type streamState struct {
+	viewers    int
+	lastActive time.Time
+	online     bool
+}
+
 type Handler struct {
-	DB     *sql.DB
-	Logger *slog.Logger
+	DB      *sql.DB
+	Logger  *slog.Logger
+	OnEvent func(any)
+
+	streamMu sync.RWMutex
+	streams  map[string]*streamState
 }
 
 func New(database *sql.DB, loggers ...*slog.Logger) *Handler {
@@ -25,7 +36,11 @@ func New(database *sql.DB, loggers ...*slog.Logger) *Handler {
 	if len(loggers) > 0 && loggers[0] != nil {
 		logger = loggers[0]
 	}
-	return &Handler{DB: database, Logger: logger}
+	return &Handler{
+		DB:      database,
+		Logger:  logger,
+		streams: make(map[string]*streamState),
+	}
 }
 
 func (h *Handler) Handler() http.Handler {
@@ -147,6 +162,9 @@ func (h *Handler) cameras(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Unable to read cameras.")
 			return
 		}
+		if h.IsStreamActive(id) {
+			available = true
+		}
 		result = append(result, map[string]any{"camera_id": id, "name": name, "available": available, "state": map[bool]string{true: "online", false: "offline"}[available], "capabilities": []string{protocol.String}})
 	}
 	if err := rows.Err(); err != nil {
@@ -154,6 +172,72 @@ func (h *Handler) cameras(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) IsStreamActive(cameraID string) bool {
+	h.streamMu.RLock()
+	defer h.streamMu.RUnlock()
+	state, ok := h.streams[cameraID]
+	if !ok {
+		return false
+	}
+	return state.viewers > 0 && time.Since(state.lastActive) < 10*time.Second
+}
+
+func (h *Handler) addStreamViewer(cameraID string) {
+	h.streamMu.Lock()
+	defer h.streamMu.Unlock()
+	state, ok := h.streams[cameraID]
+	if !ok {
+		state = &streamState{}
+		h.streams[cameraID] = state
+	}
+	state.viewers++
+	state.lastActive = time.Now()
+}
+
+func (h *Handler) removeStreamViewer(cameraID string) {
+	h.streamMu.Lock()
+	defer h.streamMu.Unlock()
+	if state, ok := h.streams[cameraID]; ok {
+		state.viewers--
+		if state.viewers <= 0 {
+			delete(h.streams, cameraID)
+		}
+	}
+}
+
+func (h *Handler) recordStreamData(ctx context.Context, cameraID string) {
+	h.streamMu.Lock()
+	state, ok := h.streams[cameraID]
+	if !ok {
+		state = &streamState{viewers: 1}
+		h.streams[cameraID] = state
+	}
+	state.lastActive = time.Now()
+	wasOnline := state.online
+	state.online = true
+	h.streamMu.Unlock()
+
+	if !wasOnline {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := h.DB.ExecContext(ctx, "UPDATE cameras SET available = 1, updated_at = ? WHERE camera_id = ?", now, cameraID); err == nil {
+			if h.Logger != nil {
+				h.Logger.Info("camera stream verified online", "event", "camera_stream_online", "camera_id", cameraID)
+			}
+			if h.OnEvent != nil {
+				h.OnEvent(map[string]any{
+					"type":      "camera.state",
+					"timestamp": now,
+					"data": map[string]any{
+						"camera_id": cameraID,
+						"available": true,
+						"state":     "online",
+					},
+				})
+			}
+		}
+	}
 }
 
 func (h *Handler) cameraStream(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +260,8 @@ func (h *Handler) cameraStream(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 	var streamURL string
-	err := h.DB.QueryRowContext(r.Context(), "SELECT stream_config_ref FROM cameras WHERE camera_id = ?", r.PathValue("camera_id")).Scan(&streamURL)
+	cameraID := r.PathValue("camera_id")
+	err := h.DB.QueryRowContext(r.Context(), "SELECT stream_config_ref FROM cameras WHERE camera_id = ?", cameraID).Scan(&streamURL)
 	if err == sql.ErrNoRows {
 		writeError(w, http.StatusNotFound, "not_found", "The requested camera does not exist.")
 		return
@@ -204,6 +289,9 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 	}}
 	response, err := client.Do(request)
 	if err != nil {
+		if h.Logger != nil {
+			h.Logger.Warn("camera stream could not be opened", "event", "camera_stream_upstream_connect_failed", "camera_id", cameraID, "error_type", fmt.Sprintf("%T", err))
+		}
 		writeError(w, http.StatusBadGateway, "camera_unavailable", "The camera stream could not be reached.")
 		return
 	}
@@ -217,7 +305,7 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 		}
 		attributes := []any{
 			"event", event,
-			"camera_id", r.PathValue("camera_id"),
+			"camera_id", cameraID,
 			"duration", time.Since(streamStarted).Round(time.Millisecond),
 			"bytes_forwarded", bytesForwarded,
 			"upstream_idle", time.Since(lastUpstreamData).Round(time.Millisecond),
@@ -228,9 +316,15 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Info("camera stream ended", attributes...)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if h.Logger != nil {
+			h.Logger.Warn("camera stream returned an error", "event", "camera_stream_upstream_bad_status", "camera_id", cameraID, "status", response.StatusCode)
+		}
 		writeError(w, http.StatusBadGateway, "camera_unavailable", "The camera stream returned an error.")
 		return
 	}
+	h.addStreamViewer(cameraID)
+	defer h.removeStreamViewer(cameraID)
+
 	contentType := response.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "multipart/x-mixed-replace"
@@ -251,6 +345,7 @@ func (h *Handler) cameraLiveStream(w http.ResponseWriter, r *http.Request) {
 		if read > 0 {
 			lastUpstreamData = time.Now()
 			bytesForwarded += int64(read)
+			h.recordStreamData(r.Context(), cameraID)
 			if _, writeErr := w.Write(buffer[:read]); writeErr != nil {
 				logStreamEnd("camera_stream_downstream_write_failed", writeErr)
 				return

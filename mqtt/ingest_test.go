@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +43,38 @@ func TestIngestDiscoveryTelemetryAndAvailability(t *testing.T) {
 	}
 	if metadata == "" {
 		t.Fatal("metadata is empty")
+	}
+	if !strings.Contains(metadata, `"available":true`) || !strings.Contains(metadata, `"state":"online"`) {
+		t.Fatalf("metadata after telemetry = %s, want online availability", metadata)
+	}
+}
+
+func TestTelemetryRepairsStaleOfflineAvailability(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.Open(ctx, "file:mqtt-telemetry-availability-test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	ingestor := New(database)
+	if err := ingestor.Handle(ctx, "my_assistant/v1/sensor/discovery", []byte(`{"schema":1,"device_id":"sensor","name":"Sensor","device_type":"sensor","transport":"mqtt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingestor.Handle(ctx, "my_assistant/v1/sensor/availability", []byte("offline")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingestor.Handle(ctx, "my_assistant/v1/sensor/telemetry", []byte(`{"schema":1,"device_id":"sensor","timestamp":"2026-09-04T00:00:00Z","measurements":{"temperature_c":24}}`)); err != nil {
+		t.Fatal(err)
+	}
+	var metadata string
+	if err := database.QueryRow("SELECT metadata_json FROM devices WHERE device_id = ?", "sensor").Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(metadata, `"available":true`) || !strings.Contains(metadata, `"state":"online"`) {
+		t.Fatalf("metadata after telemetry = %s, want online availability", metadata)
 	}
 }
 

@@ -53,6 +53,8 @@ recovery testing remain deployment tasks.
 
 - 2026.09.03
     - sensor reading/camera streaming is stable now
+- 2026.09.04
+    - stream offline display issue improved
 
 ---
 ## Info

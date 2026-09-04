@@ -58,8 +58,9 @@ func main() {
 			logger.Error("camera registration failed", "event", "camera_registration_failed", "error_type", errorType(err))
 		}
 	}
-	eventHub := realtime.NewHub()
-	go api.MonitorCameras(ctx, database, logger, eventHub.Broadcast)
+	eventHub := realtime.NewHub(logger)
+	dashboardAPI.OnEvent = eventHub.Broadcast
+	go api.MonitorCameras(ctx, database, logger, eventHub.Broadcast, dashboardAPI.IsStreamActive)
 	if mqttURL := strings.TrimSpace(os.Getenv("MY_ASSISTANT_MQTT_URL")); mqttURL != "" {
 		mqttClient := mqtt.NewClient(mqtt.Config{URL: mqttURL, Username: os.Getenv("MY_ASSISTANT_MQTT_USERNAME"), Password: os.Getenv("MY_ASSISTANT_MQTT_PASSWORD"), CAFile: os.Getenv("MY_ASSISTANT_MQTT_CA_FILE"), ClientID: "my_assistant-backend"}, mqtt.New(database), logger)
 		mqttClient.OnEvent = eventHub.Broadcast

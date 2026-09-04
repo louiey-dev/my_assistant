@@ -137,7 +137,7 @@ func (c *Client) publishEvents(topic string, payload []byte) {
 		}
 		timestamp, _ := raw["timestamp"].(string)
 		for metric, value := range measurements {
-			c.OnEvent(map[string]any{"type": "sensor.reading", "timestamp": timestamp, "data": map[string]any{"device_id": deviceID, "metric": metric, "value": value, "timestamp": timestamp}})
+			c.OnEvent(map[string]any{"type": "sensor.reading", "timestamp": timestamp, "data": map[string]any{"device_id": deviceID, "metric": metric, "value": value, "timestamp": timestamp, "available": true, "state": "online"}})
 		}
 	}
 }

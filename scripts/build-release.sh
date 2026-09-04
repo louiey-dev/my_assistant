@@ -6,7 +6,11 @@ out=${1:-"$root/dist/my_assistant-linux-arm64"}
 mkdir -p "$(dirname -- "$out")"
 (
   cd "$root/frontend"
-  npm ci
+  # Reuse an existing dependency installation for repeatable local release
+  # builds. A clean checkout still installs exactly from package-lock.json.
+  if [ ! -x node_modules/.bin/vite ]; then
+    npm ci
+  fi
   npm run build
 )
 rm -rf "$root/web/dist/assets"

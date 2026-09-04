@@ -12,7 +12,11 @@ import (
 
 // MonitorCameras periodically probes configured camera stream ports and
 // persists their availability without opening a long-lived MJPEG connection.
-func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, onEvent func(any)) {
+func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, onEvent func(any), isStreaming ...func(string) bool) {
+	var isStreamActive func(string) bool
+	if len(isStreaming) > 0 && isStreaming[0] != nil {
+		isStreamActive = isStreaming[0]
+	}
 	failures := make(map[string]int)
 	states := make(map[string]bool)
 	check := func() {
@@ -34,21 +38,32 @@ func MonitorCameras(ctx context.Context, database *sql.DB, logger *slog.Logger, 
 		_ = rows.Close()
 		for _, camera := range cameras {
 			id, streamURL := camera.id, camera.streamURL
-			available := probeStream(ctx, streamURL)
-			if available {
+			var available bool
+			if isStreamActive != nil && isStreamActive(id) {
+				// The camera is actively streaming data to a client. It is online;
+				// do not open an advisory probe that could exhaust its socket pool.
+				available = true
 				failures[id] = 0
 			} else {
-				failures[id]++
-				// Allow one transient probe failure, then report the camera
-				// offline promptly so the browser can discard its old stream.
-				if failures[id] < 2 {
-					continue
+				available = probeStream(ctx, streamURL)
+				if available {
+					failures[id] = 0
+				} else {
+					failures[id]++
+					// Allow one transient probe failure, then report the camera
+					// offline promptly so the browser can discard its old stream.
+					if failures[id] < 2 {
+						continue
+					}
 				}
 			}
 			if previous, known := states[id]; known && previous == available {
 				continue
 			}
 			states[id] = available
+			if logger != nil {
+				logger.Info("camera availability changed", "event", "camera_availability_changed", "camera_id", id, "available", available)
+			}
 			if _, err := database.ExecContext(ctx, "UPDATE cameras SET available = ?, updated_at = ? WHERE camera_id = ?", available, time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
 				continue
 			}

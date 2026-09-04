@@ -77,7 +77,9 @@ func (i *Ingestor) telemetry(ctx context.Context, topicID string, payload []byte
 			return err
 		}
 	}
-	return nil
+	// Valid telemetry is direct evidence that the device is online. This also
+	// repairs a stale retained "offline" message after a device reconnects.
+	return i.setAvailability(ctx, message.DeviceID, true, received)
 }
 
 func (i *Ingestor) availability(ctx context.Context, topicID string, payload []byte) error {
@@ -85,19 +87,27 @@ func (i *Ingestor) availability(ctx context.Context, topicID string, payload []b
 	if state != "online" && state != "offline" {
 		return errors.New("availability must be online or offline")
 	}
+	return i.setAvailability(ctx, topicID, state == "online", i.now().Format(time.RFC3339Nano))
+}
+
+func (i *Ingestor) setAvailability(ctx context.Context, deviceID string, available bool, updatedAt string) error {
 	var metadata string
-	if err := i.DB.QueryRowContext(ctx, "SELECT metadata_json FROM devices WHERE device_id = ?", topicID).Scan(&metadata); err != nil {
+	if err := i.DB.QueryRowContext(ctx, "SELECT metadata_json FROM devices WHERE device_id = ?", deviceID).Scan(&metadata); err != nil {
 		return err
 	}
 	values := map[string]any{}
 	_ = json.Unmarshal([]byte(metadata), &values)
-	values["available"] = state == "online"
-	values["state"] = state
+	values["available"] = available
+	if available {
+		values["state"] = "online"
+	} else {
+		values["state"] = "offline"
+	}
 	encoded, err := json.Marshal(values)
 	if err != nil {
 		return err
 	}
-	_, err = i.DB.ExecContext(ctx, "UPDATE devices SET metadata_json = ?, updated_at = ? WHERE device_id = ?", string(encoded), i.now().Format(time.RFC3339Nano), topicID)
+	_, err = i.DB.ExecContext(ctx, "UPDATE devices SET metadata_json = ?, updated_at = ? WHERE device_id = ?", string(encoded), updatedAt, deviceID)
 	return err
 }
 
